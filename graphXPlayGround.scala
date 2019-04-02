@@ -41,10 +41,10 @@ object GraphXPlayGround {
     val vectorDocumentRdd: RDD[(Int, SV)] = rawDocumentRdd.map(_.split("\t")).map {
       case Array(docId, rawBody) => {
         val tokenIdArray: Array[Int] = rawBody.split(" ").map {
-	  tokenIdCount => tokenIdCount.split(":").head.toInt
+	        tokenIdCount => tokenIdCount.split(":").head.toInt
         }
         val tokenCountArray: Array[Double] = rawBody.split(" ").map {
-	  tokenIdCount => tokenIdCount.split(":").last.toDouble
+	        tokenIdCount => tokenIdCount.split(":").last.toDouble
         }
         (docId.toInt, Vectors.sparse(maxIndex, tokenIdArray, tokenCountArray))
       }
@@ -59,6 +59,13 @@ object GraphXPlayGround {
       }
     }
     val graph: Graph[VD, ED] = Graph.fromEdges(edges, null, storageLevel, storageLevel)
+    graph.triplets.map { case triplet =>
+      List(triplet.srcId, triplet.dstId, triplet.srcAttr, triplet.attr.mkString(" "), triplet.dstAttr).mkString("\t")
+    }.saveAsTextFile("result-old")
+    val newGraph = updateCounter(graph, numTopics)
+    newGraph.triplets.map { case triplet =>
+      List(triplet.srcId, triplet.dstId, triplet.srcAttr, triplet.attr.mkString(" "), triplet.dstAttr).mkString("\t")
+    }.saveAsTextFile("result-update")
   }
 
   private def initializeEdges(gen: Random, doc: SV, docId: Int, numTopics: Int): Iterator[Edge[ED]] = {
@@ -73,5 +80,28 @@ object GraphXPlayGround {
         }
         Edge(tokenId, newDocId, topics)
       }
+  }
+
+  private def updateCounter(graph: Graph[VD, ED], numTopics: Int): Graph[VD, ED] = {
+    val newCounter = graph.aggregateMessages[BSV[Int]](ctx => {
+      val topics = ctx.attr
+      val vector = BSV.zeros[Int](numTopics)
+      for (topic <- topics) {
+        vector(topic) += 1
+      }
+      ctx.sendToDst(vector)
+      ctx.sendToSrc(vector)
+    }, _ + _, TripletFields.EdgeOnly)
+    .mapValues(sparseVector => {
+      val storageVector:VD =
+        if (sparseVector.activeSize > sparseVector.length / 2) {
+          sparseVector.toDenseVector
+        } else {
+          sparseVector
+        }
+      storageVector
+    })
+    // GraphImpl.fromExistingRDDs(newCounter, graph.edges)
+    GraphImpl(newCounter, graph.edges)
   }
 }
